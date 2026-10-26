@@ -262,6 +262,13 @@ export interface AgentSettings {
 	 *  route); the switch is explicit so users keep a file on disk but run
 	 *  the source default to compare (owner decision 2026-09-19). */
 	prompts?: Record<string, boolean>;
+	/** PARALLEL SUBAGENTS (owner, 2026-10-26): how many background
+	 *  extraction model calls may run at once, process-wide — the permit
+	 *  count of the shared background-LLM semaphore, and the number of
+	 *  notes files the importer keeps in flight. Integer 1–8; absent =
+	 *  EXTRACTION_CONCURRENCY_DEFAULT (3, the pre-setting constant). Audits
+	 *  stay serialized regardless (graph consistency). */
+	extractionConcurrency?: number;
 }
 
 /** Markdown-rendering knobs — the bare-bones set (owner decision). */
@@ -414,6 +421,12 @@ export const FACTORY_SETTINGS: FactorySettings = {
  *  in its rejection, the sanitizer clamps to it). */
 export const EXTRACTION_CHUNK_TOKENS_FLOOR = 500;
 
+/** Parallel subagents (AgentSettings.extractionConcurrency): the range and
+ *  the factory value (3 = the shared semaphore's historical constant). */
+export const EXTRACTION_CONCURRENCY_MIN = 1;
+export const EXTRACTION_CONCURRENCY_MAX = 8;
+export const EXTRACTION_CONCURRENCY_DEFAULT = 3;
+
 // ─── Sanitizer ─────────────────────────────────────────────────────────────
 
 const PROSE_FONT_MIN = 12;
@@ -527,6 +540,12 @@ function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 		const enabled = (raw.graphTools as Record<string, unknown>).enabled;
 		if (enabled === undefined) out.graphTools = {};
 		else if (typeof enabled === "boolean") out.graphTools = { enabled };
+	}
+	// Parallel subagents: clamp-never-reject on the read side (a hand edit
+	// or newer record never bricks the pool); junk drops to the default.
+	const concurrency = raw.extractionConcurrency;
+	if (typeof concurrency === "number" && Number.isFinite(concurrency)) {
+		out.extractionConcurrency = clamp(Math.floor(concurrency), EXTRACTION_CONCURRENCY_MIN, EXTRACTION_CONCURRENCY_MAX);
 	}
 	return out;
 }

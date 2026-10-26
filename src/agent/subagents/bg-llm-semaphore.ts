@@ -1,33 +1,29 @@
 /**
  * THE SHARED BACKGROUND-LLM SEMAPHORE (owner ruling, 2026-09-29): ONE
- * process-wide pool of 3 permits for ALL background LLM jobs — extraction
- * chunks. Total background
- * LLM concurrency is bounded at 3, whoever is calling: no subsystem gets
- * a private lane past the provider-facing stance.
+ * process-wide permit pool for ALL background LLM jobs — extraction
+ * chunks are the only holders. No subsystem gets a private lane past the
+ * provider-facing stance.
  *
- * Extraction owned this gate alone first (owner, 2026-09-28: at most 3
- * concurrent extractor calls).
- * the ruling then unified them — this module is the single truth, so
- * extraction chunks are the only holders.
+ * PERMIT COUNT (owner, 2026-10-26): the user's "Parallel subagents"
+ * setting (agent.extractionConcurrency, 1–8, default 3 — the historical
+ * constant), read LIVE by the caller-supplied getter.
  *
  * FIFO; abort-aware (a queued caller that aborts marks its ticket dead —
- * the permit handoff skips it and hands to the next waiter).
+ * admission skips it and admits the next waiter).
  *
- * FRESH-TAKE / HANDED-OFF-PERMIT discipline (the double-count deadlock
- * lesson, extraction 2026-09-28): fresh takers increment `active`
- * themselves; a HANDED-OFF permit does not (the releaser left `active`
- * untouched for the inheritor) — counting both sides is how a semaphore
- * slowly deadlocks at 3-with-empty-queue.
+ * ONE-SIDED COUNTING (the double-count deadlock lesson, extraction
+ * 2026-09-28): fresh takers increment `active` themselves; a queued
+ * ticket is counted by its ADMITTER, never by itself — counting both
+ * sides is how a semaphore slowly deadlocks with an empty queue.
  *
  * The audit side needs no slot: audits serialize behind their own global
  * lock, so by the time a job releases its permit the audit queue is the
  * only remaining throttle.
  */
 
-/** Total background LLM concurrency, process-wide, across ALL subsystems
- *  (owner ruling 2026-09-29: one shared pool — extraction chunks +
- *  extraction chunks). */
-const PERMIT_COUNT = 3;
+/** The historical constant — now only the fallback when a caller passes no
+ *  live count (the user setting agent.extractionConcurrency, 2026-10-26). */
+const DEFAULT_PERMIT_COUNT = 3;
 
 export interface LlmSlots {
 	active: number;
@@ -46,23 +42,43 @@ export function bgLlmSlots(): LlmSlots {
 	return (g.__lhLlmSlots ??= { active: 0, queue: [] });
 }
 
-/** Run `critical` under one permit of the shared pool. `signal` (the
- *  caller's row/abort controller) kills a queued ticket: it marks itself
- *  dead and rejects AbortError — the handoff skips it. */
+/** Admit live queued tickets FIFO while the pool is under `limit`. The
+ *  ADMITTER increments `active` on the inheritor's behalf (the inheritor
+ *  never counts itself) — one side counts, so the pool cannot drift. */
+function admit(slots: LlmSlots, limit: number): void {
+	while (slots.active < limit) {
+		const next = slots.queue.shift();
+		if (!next) return;
+		if (next.dead) continue; // its job already left through the abort path
+		slots.active++;
+		next.resolve();
+	}
+}
+
+/** Run `critical` under one permit of the shared pool. `permits` is read
+ *  LIVE at acquire and release (the user's parallel-subagents setting):
+ *  raising it admits waiters on the next acquire/release; lowering it never
+ *  interrupts running jobs — new ones simply wait until active < permits.
+ *  `signal` kills a queued ticket: it marks itself dead and rejects
+ *  AbortError — admission skips it. */
 export async function withBgLlmSlot<T>(
 	signal: AbortSignal | undefined,
 	critical: () => Promise<T>,
+	permits: () => number = () => DEFAULT_PERMIT_COUNT,
 ): Promise<T> {
 	const slots = bgLlmSlots();
-	let freshTake = true;
-	if (slots.active >= PERMIT_COUNT) {
-		freshTake = false;
+	const limit = () => Math.max(1, Math.floor(permits()) || DEFAULT_PERMIT_COUNT);
+	// Earlier waiters first (FIFO), then a fresh take if room remains.
+	admit(slots, limit());
+	if (slots.active < limit() && slots.queue.length === 0) {
+		slots.active++;
+	} else {
 		await new Promise<void>((resolve, reject) => {
 			const ticket: { resolve: () => void; dead: boolean } = { resolve, dead: false };
 			slots.queue.push(ticket);
 			if (!signal) return;
 			const die = () => {
-				ticket.dead = true; // the permit handoff must skip us
+				ticket.dead = true; // admission must skip us
 				const err = new Error("background LLM job aborted while queued for a permit");
 				err.name = "AbortError";
 				reject(err);
@@ -71,22 +87,10 @@ export async function withBgLlmSlot<T>(
 			else signal.addEventListener("abort", die, { once: true });
 		});
 	}
-	if (freshTake) slots.active++;
 	try {
 		return await critical();
 	} finally {
-		// Permit handoff: a waiting ticket inherits the permit directly
-		// (active stays); dead tickets are skipped — their job already
-		// left through the abort path.
-		for (;;) {
-			const next = slots.queue.shift();
-			if (!next) {
-				slots.active--;
-				break;
-			}
-			if (next.dead) continue;
-			next.resolve();
-			break;
-		}
+		slots.active--;
+		admit(slots, limit());
 	}
 }

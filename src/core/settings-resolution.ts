@@ -28,6 +28,7 @@ import type { ChatSettings } from "./contracts/chat.ts";
 import type { SearchEngineId } from "./search.ts";
 import {
 	BACKGROUND_MODEL_ROLES,
+	EXTRACTION_CONCURRENCY_DEFAULT,
 	FACTORY_SETTINGS,
 	MODEL_SLOTS,
 	ROLE_SLOT,
@@ -82,6 +83,8 @@ export interface EffectiveSettings {
 		/** Prober graph tools (wave 7): passthrough delta as stored —
 		 * absent/undefined enabled = ON; consumers use graphToolsEnabled. */
 		graphTools: { enabled?: boolean };
+		/** Parallel subagents, resolved (1–8, default 3). */
+		extractionConcurrency: number;
 	};
 	/** The resolved strong/cheap/vision slots: each tier's concrete model or
 	 *  NULL when the tier holds no model (no factory floor — BYOK all the
@@ -182,6 +185,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 			prompts: agent.prompts ?? {},
 			search: agent.search ?? {},
 			graphTools: agent.graphTools ?? {},
+			extractionConcurrency: agent.extractionConcurrency ?? EXTRACTION_CONCURRENCY_DEFAULT,
 		},
 		models: {
 			strong: resolveSlot(modelsSection.strong),

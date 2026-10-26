@@ -58,6 +58,8 @@ import { defaultOrderLevel, populateLevel } from "@/components/thinking-default"
 import type React from "react";
 import {
 	COMPACTION_THRESHOLD_FLOOR,
+	EXTRACTION_CONCURRENCY_MAX,
+	EXTRACTION_CONCURRENCY_MIN,
 	MODEL_SLOTS,
 	resolveSettings,
 	type AgentSettings,
@@ -137,6 +139,22 @@ export function composeGraphTools(agent: AgentSettings | undefined, on: boolean)
  *  override (Default — falls to the factory pin); empty thinking = the
  *  tier keeps its resolved thinking budget. Per-field independence, same
  *  as the schema's ModelSlot. Pure — exported for tests. */
+/** Parallel subagents row → the whole agent section, or null for input
+ *  that writes nothing. Empty = unset (factory 3); numbers round and clamp
+ *  into 1–8 so the strict server parse always accepts the write. */
+export function composeExtractionConcurrency(agent: AgentSettings | undefined, raw: string): AgentSettings | null {
+	if (raw.trim() === "") {
+		const { extractionConcurrency: _drop, ...rest } = agent ?? {};
+		return rest;
+	}
+	const n = Number(raw);
+	if (!Number.isFinite(n)) return null;
+	return {
+		...agent,
+		extractionConcurrency: Math.min(EXTRACTION_CONCURRENCY_MAX, Math.max(EXTRACTION_CONCURRENCY_MIN, Math.round(n))),
+	};
+}
+
 export function composeSlotModel(
 	models: ModelsSettings | undefined,
 	slot: ModelSlotName,
@@ -608,6 +626,7 @@ export function AgentSection({
 	// Resolved through the SAME core resolver the server's effective
 	// settings use (the GraphSection precedent): the hint and placeholder
 	// report exactly the number the trigger waits for.
+	const resolvedAgent = resolveSettings(agent === undefined ? null : { version: 1, agent }).agent;
 	const resolvedCompaction = resolveSettings(
 		compaction === undefined ? null : { version: 1, compaction },
 	).compaction;
@@ -847,6 +866,30 @@ export function AgentSection({
 						</SettingsRow>
 					);
 				})()}
+			</SettingsGroup>
+
+			<SettingsGroup label="Subagents" testid="group-subagents">
+				{/* Parallel subagents (owner, 2026-10-26): the shared background
+				    pool's permit count — graph extractions running at once, and
+				    the notes files an import keeps in flight. Audits stay one at
+				    a time regardless (graph consistency). */}
+				<SettingsRow
+					label="Parallel subagents"
+					hint={`Graph extractions at once (${EXTRACTION_CONCURRENCY_MIN}–${EXTRACTION_CONCURRENCY_MAX}) · ${resolvedAgent.extractionConcurrency}`}
+					testid="subagents-row-concurrency"
+				>
+					<CommitInput
+						type="number"
+						value={String(agent?.extractionConcurrency ?? "")}
+						placeholder={String(resolvedAgent.extractionConcurrency)}
+						ariaLabel="parallel subagents"
+						testid="input-extraction-concurrency"
+						onCommit={(v) => {
+							const next = composeExtractionConcurrency(agent, v);
+							if (next) onSectionChange(next);
+						}}
+					/>
+				</SettingsRow>
 			</SettingsGroup>
 
 			<SettingsGroup label="Context" testid="group-context">

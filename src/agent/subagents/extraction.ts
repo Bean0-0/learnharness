@@ -5,6 +5,7 @@ import { Type, type Static, type TSchema } from "typebox";
 import { toToolResult } from "../tool-execute.ts";
 import type { ModelRole } from "../../../config.ts";
 import {
+	EXTRACTION_CONCURRENCY_DEFAULT,
 	FACTORY_SETTINGS,
 	ModelsNotConfiguredError,
 	ProviderKeyMissingError,
@@ -736,6 +737,11 @@ export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
 	 *  callers wire the live effective settings (extraction-UX redesign,
 	 *  2026-09-24). */
 	getChunkTokens?: () => number;
+	/** Parallel subagents (agent.extractionConcurrency): the shared
+	 *  background-LLM permit count, read LIVE per acquire/release. OPTIONAL
+	 *  (default 3) so fixtures stay minimal; the composition root wires the
+	 *  effective settings. */
+	getConcurrency?: () => number;
 }
 
 export interface NotesImportInput {
@@ -1006,7 +1012,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	 *  behind their own global lock. */
 	async function withExtractSlot<T>(jobKey: string, critical: () => Promise<T>): Promise<T> {
 		const signal = runningExtractions.get(jobKey)?.controller.signal;
-		return withBgLlmSlot(signal, critical);
+		return withBgLlmSlot(signal, critical, () => deps.getConcurrency?.() ?? EXTRACTION_CONCURRENCY_DEFAULT);
 	}
 
 		/** Append the run's usage record to the chat's extractions log — success

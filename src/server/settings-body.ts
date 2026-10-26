@@ -23,7 +23,7 @@ import type {
 	ModelsSettings,
 	RoleModelOverride,
 } from "../core/settings.ts";
-import { BACKGROUND_MODEL_ROLES, COMPACTION_THRESHOLD_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, MODEL_SLOTS } from "../core/settings.ts";
+import { BACKGROUND_MODEL_ROLES, COMPACTION_THRESHOLD_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, EXTRACTION_CONCURRENCY_MAX, EXTRACTION_CONCURRENCY_MIN, MODEL_SLOTS } from "../core/settings.ts";
 import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
 
 /** Parsed-or-rejected — `ok: false` carries the 400's error message. */
@@ -194,6 +194,14 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 			return { ok: false, error: "graphTools.enabled must be a boolean" };
 		}
 		settings.graphTools = graphTools.enabled === undefined ? {} : { enabled: graphTools.enabled };
+	}
+	// Parallel subagents: strict write side (the read side clamps).
+	if (raw.extractionConcurrency !== undefined) {
+		const n = raw.extractionConcurrency;
+		if (typeof n !== "number" || !Number.isInteger(n) || n < EXTRACTION_CONCURRENCY_MIN || n > EXTRACTION_CONCURRENCY_MAX) {
+			return { ok: false, error: `extractionConcurrency must be an integer from ${EXTRACTION_CONCURRENCY_MIN} to ${EXTRACTION_CONCURRENCY_MAX}` };
+		}
+		settings.extractionConcurrency = n;
 	}
 	return { ok: true, settings };
 }

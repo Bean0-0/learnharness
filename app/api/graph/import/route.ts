@@ -3,7 +3,7 @@
  * (vision §1, 2026-09-13): raw personal-notes files in, one extraction run
  * per file through the SAME pipeline the sessions use. Multipart form data
  * (field "files", optional matching "paths" for folder-relative identity;
- * accepts Markdown, plain text and raw HTML); the pipeline mints a
+ * accepts Markdown and plain text); the pipeline mints a
  * deterministic source id per file path, persists the
  * source record (the file's provenance + the run's usage), and runs
  * extractor → auditor → merger over the raw text.

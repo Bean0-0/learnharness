@@ -3,7 +3,8 @@
 import { useRef, useState } from "react";
 import { UploadIcon } from "lucide-react";
 import { Hint } from "@/components/ui/hint";
-import { IMPORT_EXTENSIONS, MAX_IMPORT_BATCH_BYTES, MAX_IMPORT_BATCH_FILES, validNotesPath } from "@/lib/notes-import-limits";
+import { IMPORT_EXTENSIONS, MAX_IMPORT_BATCH_BYTES, validNotesPath } from "@/lib/notes-import-limits";
+import { EXTRACTION_CONCURRENCY_DEFAULT, resolveSettings, type UserSettings } from "@/src/core";
 
 export function notesPath(file: File): string {
 	return file.webkitRelativePath || file.name;
@@ -61,8 +62,27 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 	return parseNotesImportResults(body, files);
 }
 
+/** The resolved "Parallel subagents" setting (agent.extractionConcurrency),
+ *  read fresh per import. Any failure falls back to the default: the
+ *  server-side pool enforces the real cap either way. */
+export async function loadImportConcurrency(): Promise<number> {
+	try {
+		const response = await fetch("/api/settings");
+		if (!response.ok) return EXTRACTION_CONCURRENCY_DEFAULT;
+		const body = await response.json() as { settings?: UserSettings | null };
+		return resolveSettings(body?.settings ?? null).agent.extractionConcurrency;
+	} catch {
+		return EXTRACTION_CONCURRENCY_DEFAULT;
+	}
+}
+
 /** Only error text survives a request; selected Files stay request-local. */
-export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () => void } = {}) {
+export function useNotesImport(callbacks: {
+	onStart?: () => void;
+	onFinish?: () => void;
+	/** Test seam; production reads the user's Parallel subagents setting. */
+	loadConcurrency?: () => Promise<number>;
+} = {}) {
 	const [errors, setErrors] = useState<string[]>([]);
 	const [importing, setImporting] = useState(false);
 	const pending = useRef(false);
@@ -74,25 +94,7 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 		try {
 			callbacks.onStart?.();
 			const failures = new Map<number, string>();
-			let batch: { file: File; index: number }[] = [];
-			let bytes = 0;
-			const flush = async () => {
-				if (!batch.length) return;
-				const pending = batch;
-				batch = []; bytes = 0;
-				try {
-					const results = await postNotesImport(pending.map(({ file }) => file));
-					for (const result of results) {
-						if (result.ok) continue;
-						const index = pending[result.requestIndex]!.index;
-						failures.set(index, `${result.filePath}: ${result.error}${result.code ? `\n${result.code}${result.provider ? ` — ${result.provider}` : ""}${result.missing?.length ? ` — ${result.missing.join(", ")}` : ""}${result.slots?.length ? ` — ${result.slots.join(", ")}` : ""}` : ""}`);
-					}
-				} catch (error) {
-					// Never auto-retry: an invalid/lost response may follow a committed merge.
-					const message = error instanceof Error ? error.message : String(error);
-					for (const { file, index } of pending) failures.set(index, `${notesPath(file)}: ${message}`);
-				}
-			};
+			const queue: { file: File; index: number }[] = [];
 			for (const [index, file] of files.entries()) {
 				const path = notesPath(file);
 				if (file.webkitRelativePath && file.name === ".DS_Store") continue;
@@ -104,10 +106,28 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 					failures.set(index, `${path}: File exceeds 7 MiB import limit.`);
 					continue;
 				}
-				if (batch.length >= MAX_IMPORT_BATCH_FILES || bytes + file.size > MAX_IMPORT_BATCH_BYTES) await flush();
-				batch.push({ file, index }); bytes += file.size;
+				queue.push({ file, index });
 			}
-			await flush();
+			// CONTINUOUS QUEUE (owner, 2026-10-26): one file per request, N in
+			// flight — the next file starts the moment any file finishes, so a
+			// slow file never idles the other workers. A lost response is
+			// ambiguous for only its own file and is never retried.
+			const width = Math.max(1, Math.floor(await (callbacks.loadConcurrency ?? loadImportConcurrency)()) || EXTRACTION_CONCURRENCY_DEFAULT);
+			const worker = async () => {
+				for (let next = queue.shift(); next; next = queue.shift()) {
+					const { file, index } = next;
+					try {
+						const [result] = await postNotesImport([file]);
+						if (result && !result.ok) {
+							failures.set(index, `${result.filePath}: ${result.error}${result.code ? `\n${result.code}${result.provider ? ` — ${result.provider}` : ""}${result.missing?.length ? ` — ${result.missing.join(", ")}` : ""}${result.slots?.length ? ` — ${result.slots.join(", ")}` : ""}` : ""}`);
+						}
+					} catch (error) {
+						// Never auto-retry: an invalid/lost response may follow a committed merge.
+						failures.set(index, `${notesPath(file)}: ${error instanceof Error ? error.message : String(error)}`);
+					}
+				}
+			};
+			await Promise.all(Array.from({ length: Math.min(width, queue.length) }, worker));
 			setErrors([...failures].sort(([a], [b]) => a - b).map(([, message]) => message));
 		} finally {
 			pending.current = false;
@@ -133,9 +153,9 @@ export function NotesImportControl({ importing, onImportFiles }: {
 		<div className="relative shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur"
 			onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
 			onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
-			<input ref={filesRef} type="file" multiple accept=".md,.markdown,.txt,.html,.htm" className="hidden"
+			<input ref={filesRef} type="file" multiple accept=".md,.markdown,.txt" className="hidden"
 				onChange={(event) => { onImportFiles(event.target.files); event.target.value = ""; }} />
-			<input ref={folderRef} type="file" multiple accept=".md,.markdown,.txt,.html,.htm"
+			<input ref={folderRef} type="file" multiple accept=".md,.markdown,.txt"
 				{...{ webkitdirectory: "", directory: "" }} className="hidden"
 				onChange={(event) => { onImportFiles(event.target.files); event.target.value = ""; }} />
 			<Hint label="Import notes into the graph" side="bottom">

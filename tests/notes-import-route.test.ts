@@ -102,21 +102,21 @@ it("route returns 400 without files", async () => {
 	assert.deepEqual(await response.json(), { results: [], error: "no files" });
 });
 
-it("folder paths distinguish identical basenames and HTML reaches extractor unchanged", async () => {
+it("folder paths distinguish identical basenames and text reaches extractor unchanged", async () => {
 	const calls: { filePath: string; text: string }[] = [];
 	extraction.importNotes = async (input) => { calls.push(input); return { nodes: 0, chains: 0 }; };
 	const form = new FormData();
-	for (const path of ["Notes/one/same.html", "Notes/two/same.html"]) {
-		form.append("files", new File(["<p>raw <b>HTML</b></p>"], "same.html"));
+	for (const path of ["Notes/one/same.md", "Notes/two/same.md"]) {
+		form.append("files", new File(["raw **text**"], "same.md"));
 		form.append("paths", path);
 	}
 	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
 	assert.equal(response.status, 200);
 	const { results } = await response.json();
-	assert.deepEqual(results.map((row: { filePath: string }) => row.filePath), ["Notes/one/same.html", "Notes/two/same.html"]);
+	assert.deepEqual(results.map((row: { filePath: string }) => row.filePath), ["Notes/one/same.md", "Notes/two/same.md"]);
 	assert.deepEqual(calls, [
-		{ filePath: "Notes/one/same.html", text: "<p>raw <b>HTML</b></p>" },
-		{ filePath: "Notes/two/same.html", text: "<p>raw <b>HTML</b></p>" },
+		{ filePath: "Notes/one/same.md", text: "raw **text**" },
+		{ filePath: "Notes/two/same.md", text: "raw **text**" },
 	]);
 });
 
@@ -124,15 +124,15 @@ it("accepts Chromium folder multipart filenames while preserving safe relative s
 	const calls: { filePath: string; text: string }[] = [];
 	extraction.importNotes = async (input) => { calls.push(input); return { nodes: 0, chains: 0 }; };
 	const form = new FormData();
-	const path = "STAT 211 notes/notes/09_chapter3normal.html";
+	const path = "Course notes/week 3/normal.md";
 	// Chromium serializes folder-selected File.name as webkitRelativePath in multipart.
-	form.append("files", new File(["<p>fixture</p>"], "09_chapter3normal.html"), path);
+	form.append("files", new File(["fixture"], "normal.md"), path);
 	form.append("paths", path);
 	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
 	assert.equal(response.status, 200);
 	const { results } = await response.json();
 	assert.equal(results[0].filePath, path);
-	assert.deepEqual(calls, [{ filePath: path, text: "<p>fixture</p>" }]);
+	assert.deepEqual(calls, [{ filePath: path, text: "fixture" }]);
 });
 
 it("rejects unsafe paths, mismatched path counts and unsupported formats before extraction", async () => {
@@ -141,6 +141,7 @@ it("rejects unsafe paths, mismatched path counts and unsupported formats before 
 	for (const [path, name] of [
 		["../same.md", "same.md"], ["C:/same.md", "same.md"], ["x\\same.md", "same.md"],
 		["foo/other.md", "same.md"], ["foo/same.md", "bar/same.md"], ["folder/image.png", "image.png"],
+		["folder/page.html", "page.html"], ["page.htm", "page.htm"],
 	] as const) {
 		const form = new FormData();
 		form.append("files", new File(["text"], name)); form.append("paths", path);

@@ -121,6 +121,9 @@ export const extraction = createExtractionPipeline({
 	// refuses BEFORE any batch runs (the typed throw), never mid-run.
 	providerKeyMissing: (provider, tier) =>
 		providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
+	// Parallel subagents (owner, 2026-10-26): the shared pool's permit count,
+	// read FRESH per acquire/release — a settings save applies without restart.
+	getConcurrency: () => effectiveSettings().agent.extractionConcurrency,
 });
 
 

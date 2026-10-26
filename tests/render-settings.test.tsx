@@ -12,7 +12,7 @@ import React from "react";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TOGGLE_TOOLS, AgentSection } from "../components/settings/agent-section.tsx";
+import { TOGGLE_TOOLS, AgentSection, composeExtractionConcurrency } from "../components/settings/agent-section.tsx";
 import { AppearanceSection, GraphSection } from "../components/settings/appearance-section.tsx";
 import { KeysSection } from "../components/settings/keys-section.tsx";
 import { KeyboardSection } from "../components/settings/keyboard-section.tsx";
@@ -130,6 +130,23 @@ describe("AgentSection (thin SSR)", () => {
 		);
 		const row = html.split('data-testid="graph-tools-row"')[1] ?? "";
 		assert.ok(row.includes('aria-checked="false"'), "stored-off renders off");
+	});
+
+	it("Parallel subagents row: default 3 placeholder, stored value shown, writes clamp into 1–8", () => {
+		const html = renderToStaticMarkup(<AgentSection agent={undefined} models={undefined} graph={undefined} onSectionChange={() => {}} onModelsChange={() => {}} />);
+		const row = html.split('data-testid="subagents-row-concurrency"')[1]?.split("</label>")[0] ?? html.split('data-testid="subagents-row-concurrency"')[1] ?? "";
+		assert.ok(html.includes("Parallel subagents"));
+		assert.match(row, /placeholder="3"/);
+		assert.match(row, /Graph extractions at once \(1–8\)/);
+		const stored = renderToStaticMarkup(<AgentSection agent={{ extractionConcurrency: 6 }} models={undefined} graph={undefined} onSectionChange={() => {}} onModelsChange={() => {}} />);
+		assert.match(stored.split('data-testid="subagents-row-concurrency"')[1] ?? "", /value="6"/);
+		const base = { graphTools: { enabled: false }, extractionConcurrency: 4 };
+		assert.deepEqual(composeExtractionConcurrency(base, "6"), { ...base, extractionConcurrency: 6 });
+		assert.deepEqual(composeExtractionConcurrency(base, "20"), { ...base, extractionConcurrency: 8 });
+		assert.deepEqual(composeExtractionConcurrency(base, "0"), { ...base, extractionConcurrency: 1 });
+		assert.deepEqual(composeExtractionConcurrency(base, "2.6"), { ...base, extractionConcurrency: 3 });
+		assert.deepEqual(composeExtractionConcurrency(base, ""), { graphTools: { enabled: false } }, "empty unsets, other keys kept");
+		assert.equal(composeExtractionConcurrency(base, "abc"), null, "junk writes nothing");
 	});
 
 	it("renders the owner's FINAL tool list — research, demo, visual, pdf", () => {
