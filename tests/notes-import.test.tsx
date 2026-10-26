@@ -6,7 +6,7 @@ import { afterEach, it } from "node:test";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { NotesImportErrors, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
+import { NotesImportControl, NotesImportErrors, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
 
 // Real hook/React state, isolated DOM and wholly stubbed import transport.
 const dom = parseHTML("<html><body></body></html>");
@@ -63,7 +63,7 @@ for (const [name, results] of [
 	["invalid error", [{ ...completed(), error: 42 }, completed(1)]],
 	["missing failure error", [{ ...completed(), ok: false, outcome: "failed" }, completed(1)]],
 ] as const) it(`malformed response (${name}) is rejected for retry`, () => {
-	assert.throws(() => parseNotesImportResults({ results }, files), /Please retry/);
+	assert.throws(() => parseNotesImportResults({ results }, files), /Check the graph before retrying/);
 });
 
 it("POST sends only captured files, and retains config/provider details", async () => {
@@ -155,11 +155,108 @@ for (const kind of ["network", "non-JSON", "non-2xx", "malformed", "duplicate in
 	};
 	await mount();
 	await submit();
-	const message = kind === "network" ? "synthetic offline" : kind === "non-2xx" ? "Import request failed (HTTP 503): synthetic refused. Please retry the file." : "Invalid import response. Please retry the file.";
+	const message = kind === "network" ? "synthetic offline" : kind === "non-2xx" ? "Import request failed (HTTP 503): synthetic refused. Check the graph before retrying." : "Invalid import response. Check the graph before retrying.";
 	assert.deepEqual(current.errors, files.map((file) => `${file.name}: ${message}`));
 	assert.equal(host!.querySelectorAll('[role="alert"]').length, 2);
 	assert.equal(finishes, 1);
 	assert.equal(current.importing, false);
+});
+
+it("directory picks preserve relative paths and reject attribution to the wrong same-named file", async () => {
+	const nested = ["Folder/a/same.html", "Folder/b/same.html"].map((path) => {
+		const file = new File(["<p>raw</p>"], "same.html");
+		Object.defineProperty(file, "webkitRelativePath", { value: path });
+		return file;
+	});
+	globalThis.fetch = async (_url, init) => {
+		const form = init?.body as FormData;
+		assert.deepEqual(form.getAll("paths"), ["Folder/a/same.html", "Folder/b/same.html"]);
+		assert.deepEqual((form.getAll("files") as File[]).map((file) => file.name), ["same.html", "same.html"]);
+		return Response.json({ results: nested.map((_, requestIndex) => ({
+			requestIndex, filePath: ["Folder/a/same.html", "Folder/b/same.html"][requestIndex],
+			outcome: "completed", ok: true, stats: { nodes: 0 },
+		})) });
+	};
+	assert.equal((await postNotesImport(nested)).length, 2);
+	assert.throws(() => parseNotesImportResults({ results: [
+		{ requestIndex: 0, filePath: "Folder/b/same.html", outcome: "completed", ok: true, stats: { nodes: 0 } },
+		{ requestIndex: 1, filePath: "Folder/a/same.html", outcome: "completed", ok: true, stats: { nodes: 0 } },
+	] }, nested), /Invalid import response/);
+});
+
+it("seven files send sequential three-file batches; failed batch does not retry or hide later successes", async () => {
+	const selected = Array.from({ length: 7 }, (_, i) => new File(["text"], `note-${i}.md`));
+	const batches: string[][] = [];
+	let active = 0, peak = 0;
+	globalThis.fetch = async (_url, init) => {
+		active++; peak = Math.max(peak, active);
+		try {
+			const names = ((init?.body as FormData).getAll("files") as File[]).map((file) => file.name);
+			batches.push(names);
+			if (batches.length === 2) return new Response("invalid response");
+			return Response.json({ results: names.map((filePath, requestIndex) => ({
+				requestIndex, filePath, ok: true, outcome: "completed", stats: { nodes: 0 },
+			})) });
+		} finally { active--; }
+	};
+	await mount(); await submit(selected);
+	assert.equal(peak, 1);
+	assert.deepEqual(batches, [["note-0.md", "note-1.md", "note-2.md"], ["note-3.md", "note-4.md", "note-5.md"], ["note-6.md"]]);
+	assert.deepEqual(current.errors, [3, 4, 5].map((i) => `note-${i}.md: Invalid import response. Check the graph before retrying.`));
+	assert.equal(starts, 1); assert.equal(finishes, 1);
+});
+
+it("splits uploads by bytes as well as count", async () => {
+	const selected = Array.from({ length: 3 }, (_, i) => new File([new Uint8Array(3 * 1024 * 1024)], `large-${i}.md`));
+	const batches: number[] = [];
+	globalThis.fetch = async (_url, init) => {
+		const sent = (init?.body as FormData).getAll("files") as File[];
+		batches.push(sent.length);
+		return Response.json({ results: sent.map((file, requestIndex) => ({
+			requestIndex, filePath: file.name, ok: true, outcome: "completed", stats: { nodes: 0 },
+		})) });
+	};
+	await mount(); await submit(selected);
+	assert.deepEqual(batches, [2, 1]);
+	assert.deepEqual(current.errors, []);
+});
+
+it("skips oversized and unsupported files while importing eligible siblings", async () => {
+	const selected = [new File([new Uint8Array(7 * 1024 * 1024 + 1)], "huge.md"), new File(["binary"], "photo.png"), new File(["text"], "ok.htm")];
+	let requests = 0;
+	globalThis.fetch = async (_url, init) => {
+		requests++;
+		assert.deepEqual((init?.body as FormData).getAll("paths"), ["ok.htm"]);
+		return Response.json({ results: [{ requestIndex: 0, filePath: "ok.htm", ok: true, outcome: "completed", stats: { nodes: 0 } }] });
+	};
+	await mount(); await submit(selected);
+	assert.equal(requests, 1);
+	assert.match(current.errors[0]!, /huge.md: File exceeds 7 MiB import limit/);
+	assert.match(current.errors[1]!, /photo.png: Unsupported format/);
+});
+
+it("one import button exposes Files and Folder native selectors", () => {
+	const html = renderToStaticMarkup(<NotesImportControl importing={false} onImportFiles={() => {}} />);
+	assert.equal((html.match(/type="file"/g) ?? []).length, 2);
+	assert.match(html, /webkitdirectory=""/);
+	assert.match(html, /\.html,\.htm/);
+	assert.equal((html.match(/data-testid="import-notes"/g) ?? []).length, 1);
+});
+
+it("single import button opens Files / Folder choices and opens folder picker", async () => {
+	await mount();
+	await act(async () => { root!.render(<NotesImportControl importing={false} onImportFiles={() => {}} />); });
+	const inputs = host!.querySelectorAll<HTMLInputElement>('input[type="file"]');
+	assert.equal(inputs.length, 2);
+	let picked = "";
+	inputs[0]!.click = () => { picked = "files"; };
+	inputs[1]!.click = () => { picked = "folder"; };
+	await act(async () => { host!.querySelector<HTMLButtonElement>('[data-testid="import-notes"]')!.click(); });
+	const choices = host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+	assert.deepEqual(Array.from(choices, (button) => button.textContent), ["Files", "Folder"]);
+	await act(async () => { choices[1]!.click(); });
+	assert.equal(picked, "folder");
+	assert.equal(host!.querySelector('[role="menu"]'), null);
 });
 
 it("actual attempts clear errors immediately, guard synchronous reentry, preserve callbacks and allow same-file reimport", async () => {
