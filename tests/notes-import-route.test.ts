@@ -26,12 +26,12 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 			await new Promise((resolve) => setTimeout(resolve, filePath === "slow.md" ? 25 : 1));
 			if (filePath === "models.md") throw new ModelsNotConfiguredError(["cheap"]);
 			if (filePath === "key.md") throw new ProviderKeyMissingError("openai", ["cheap"]);
-			if (["failed", "partial", "aborted", "busy"].includes(filePath)) throw new NotesImportError(filePath as NotesImportError["outcome"], { nodes: 2, chains: 1 }, `synthetic ${filePath}`);
+			if (["failed.md", "partial.md", "aborted.md", "busy.md"].includes(filePath)) throw new NotesImportError(filePath.slice(0, -3) as NotesImportError["outcome"], { nodes: 2, chains: 1 }, `synthetic ${filePath}`);
 			if (filePath === "unknown.md") throw new Error("synthetic unknown error");
 			return { nodes: 0, chains: 0 };
 		} finally { active--; }
 	};
-	const names = ["slow.md", "same.md", "same.md", "failed", "partial", "aborted", "busy", "models.md", "key.md", "unknown.md"];
+	const names = ["slow.md", "same.md", "same.md", "failed.md", "partial.md", "aborted.md", "busy.md", "models.md", "key.md", "unknown.md"];
 	const response = await POST(request(names));
 	assert.equal(response.status, 200);
 	const { results } = await response.json();
@@ -41,8 +41,8 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 	for (const [requestIndex, filePath] of names.entries()) {
 		const result = results.find((r: { requestIndex: number }) => r.requestIndex === requestIndex);
 		assert.equal(result.filePath, filePath);
-		if (["failed", "partial", "aborted", "busy"].includes(filePath)) {
-			assert.equal(result.outcome, filePath);
+		if (["failed.md", "partial.md", "aborted.md", "busy.md"].includes(filePath)) {
+			assert.equal(result.outcome, filePath.slice(0, -3));
 			assert.equal(result.ok, false);
 			assert.deepEqual(result.stats, { nodes: 2, chains: 1 });
 		} else if (["slow.md", "same.md"].includes(filePath)) {
@@ -100,4 +100,58 @@ it("route returns 400 without files", async () => {
 	const response = await POST(request([]));
 	assert.equal(response.status, 400);
 	assert.deepEqual(await response.json(), { results: [], error: "no files" });
+});
+
+it("folder paths distinguish identical basenames and HTML reaches extractor unchanged", async () => {
+	const calls: { filePath: string; text: string }[] = [];
+	extraction.importNotes = async (input) => { calls.push(input); return { nodes: 0, chains: 0 }; };
+	const form = new FormData();
+	for (const path of ["Notes/one/same.html", "Notes/two/same.html"]) {
+		form.append("files", new File(["<p>raw <b>HTML</b></p>"], "same.html"));
+		form.append("paths", path);
+	}
+	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	assert.equal(response.status, 200);
+	const { results } = await response.json();
+	assert.deepEqual(results.map((row: { filePath: string }) => row.filePath), ["Notes/one/same.html", "Notes/two/same.html"]);
+	assert.deepEqual(calls, [
+		{ filePath: "Notes/one/same.html", text: "<p>raw <b>HTML</b></p>" },
+		{ filePath: "Notes/two/same.html", text: "<p>raw <b>HTML</b></p>" },
+	]);
+});
+
+it("rejects unsafe paths, mismatched path counts and unsupported formats before extraction", async () => {
+	let calls = 0;
+	extraction.importNotes = async () => { calls++; return { nodes: 0, chains: 0 }; };
+	for (const [path, name] of [
+		["../same.md", "same.md"], ["C:/same.md", "same.md"], ["x\\same.md", "same.md"],
+		["foo/other.md", "same.md"], ["folder/image.png", "image.png"],
+	] as const) {
+		const form = new FormData();
+		form.append("files", new File(["text"], name)); form.append("paths", path);
+		assert.equal((await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }))).status, 400, path);
+	}
+	const form = new FormData(); form.append("files", new File(["text"], "same.md"));
+	form.append("paths", "same.md"); form.append("paths", "other.md");
+	assert.equal((await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }))).status, 400);
+	const oversized = new FormData();
+	oversized.append("files", new File([new Uint8Array(7 * 1024 * 1024 + 1)], "huge.md"));
+	assert.equal((await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: oversized }))).status, 400);
+	const tooMany = new FormData();
+	for (let i = 0; i < 65; i++) tooMany.append("files", new File([""], `note-${i}.md`));
+	assert.equal((await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: tooMany }))).status, 400);
+	assert.equal(calls, 0);
+});
+
+it("enforces byte limit on streamed request without Content-Length", async () => {
+	let calls = 0;
+	extraction.importNotes = async () => { calls++; return { nodes: 0, chains: 0 }; };
+	const huge = new Uint8Array(8 * 1024 * 1024 + 1);
+	const request = new Request("http://localhost/api/graph/import", {
+		method: "POST", headers: { "content-type": "multipart/form-data; boundary=test" },
+		body: new ReadableStream({ start(controller) { controller.enqueue(huge); controller.close(); } }), duplex: "half",
+	} as RequestInit & { duplex: "half" });
+	const response = await POST(request);
+	assert.equal(response.status, 413);
+	assert.equal(calls, 0);
 });
