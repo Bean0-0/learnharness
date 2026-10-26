@@ -15,7 +15,6 @@
  * /api/graph/status, as with session runs.
  */
 import { extraction, NotesImportError } from "@/src/server";
-import { htmlToNotesText } from "@/lib/html-to-text";
 import { IMPORT_EXTENSIONS, MAX_IMPORT_BATCH_BYTES, MAX_IMPORT_REQUEST_BYTES, validNotesPath } from "@/lib/notes-import-limits";
 import {
 	ModelsNotConfiguredError,
@@ -92,9 +91,7 @@ export async function POST(request: Request) {
 			if (!next) return;
 			const { file, filePath, requestIndex } = next;
 			try {
-				const raw = await file.text();
-				// HTML is mostly images/SVG; extract readable text + math (#190).
-				const text = /\.html?$/i.test(filePath) ? htmlToNotesText(raw) : raw;
+				const text = await file.text();
 				const stats = await extraction.importNotes({ filePath, text });
 				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats });
 			} catch (err) {

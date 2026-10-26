@@ -102,7 +102,7 @@ it("route returns 400 without files", async () => {
 	assert.deepEqual(await response.json(), { results: [], error: "no files" });
 });
 
-it("folder paths distinguish identical basenames and HTML reaches extractor as readable text", async () => {
+it("folder paths distinguish identical basenames and HTML reaches extractor unchanged", async () => {
 	const calls: { filePath: string; text: string }[] = [];
 	extraction.importNotes = async (input) => { calls.push(input); return { nodes: 0, chains: 0 }; };
 	const form = new FormData();
@@ -115,19 +115,9 @@ it("folder paths distinguish identical basenames and HTML reaches extractor as r
 	const { results } = await response.json();
 	assert.deepEqual(results.map((row: { filePath: string }) => row.filePath), ["Notes/one/same.html", "Notes/two/same.html"]);
 	assert.deepEqual(calls, [
-		{ filePath: "Notes/one/same.html", text: "raw **HTML**" },
-		{ filePath: "Notes/two/same.html", text: "raw **HTML**" },
+		{ filePath: "Notes/one/same.html", text: "<p>raw <b>HTML</b></p>" },
+		{ filePath: "Notes/two/same.html", text: "<p>raw <b>HTML</b></p>" },
 	]);
-});
-
-it("Markdown and plain text reach extractor unchanged", async () => {
-	const calls: { filePath: string; text: string }[] = [];
-	extraction.importNotes = async (input) => { calls.push(input); return { nodes: 0, chains: 0 }; };
-	const form = new FormData();
-	for (const name of ["a.md", "b.txt"]) form.append("files", new File(["<p>kept</p>"], name));
-	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
-	assert.equal(response.status, 200);
-	assert.deepEqual(calls.map((c) => c.text), ["<p>kept</p>", "<p>kept</p>"]);
 });
 
 it("accepts Chromium folder multipart filenames while preserving safe relative source paths", async () => {
@@ -142,7 +132,7 @@ it("accepts Chromium folder multipart filenames while preserving safe relative s
 	assert.equal(response.status, 200);
 	const { results } = await response.json();
 	assert.equal(results[0].filePath, path);
-	assert.deepEqual(calls, [{ filePath: path, text: "fixture" }]);
+	assert.deepEqual(calls, [{ filePath: path, text: "<p>fixture</p>" }]);
 });
 
 it("rejects unsafe paths, mismatched path counts and unsupported formats before extraction", async () => {
