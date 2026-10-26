@@ -7,7 +7,10 @@ export const IMPORT_EXTENSIONS = /\.(?:md|markdown|txt|html|htm)$/i;
 
 /** Folder-relative paths are graph source identity, never filesystem paths. */
 export function validNotesPath(path: string, filename: string): boolean {
+	const parts = path.split("/");
 	return path.length > 0 && path.length <= 1024 && !/[\\:\x00-\x1f\x7f]/.test(path)
-		&& path.split("/").every((part) => part.length > 0 && part !== "." && part !== "..")
-		&& path.split("/").at(-1) === filename;
+		&& parts.every((part) => part.length > 0 && part !== "." && part !== "..")
+		// Chromium submits folder-selected Files with the full relative path as
+		// multipart filename; other clients send only the basename.
+		&& (parts.at(-1) === filename || path === filename);
 }

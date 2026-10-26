@@ -235,6 +235,22 @@ it("skips oversized and unsupported files while importing eligible siblings", as
 	assert.match(current.errors[1]!, /photo.png: Unsupported format/);
 });
 
+it("folder selection silently ignores .DS_Store while importing valid notes", async () => {
+	const metadata = new File(["metadata"], ".DS_Store");
+	Object.defineProperty(metadata, "webkitRelativePath", { value: "STAT 211 notes/.DS_Store" });
+	const note = new File(["<p>fixture</p>"], "index.html");
+	Object.defineProperty(note, "webkitRelativePath", { value: "STAT 211 notes/index.html" });
+	let requests = 0;
+	globalThis.fetch = async (_url, init) => {
+		requests++;
+		assert.deepEqual((init?.body as FormData).getAll("paths"), ["STAT 211 notes/index.html"]);
+		return Response.json({ results: [{ requestIndex: 0, filePath: "STAT 211 notes/index.html", ok: true, outcome: "completed", stats: { nodes: 0 } }] });
+	};
+	await mount(); await submit([metadata, note]);
+	assert.equal(requests, 1);
+	assert.deepEqual(current.errors, []);
+});
+
 it("one import button exposes Files and Folder native selectors", () => {
 	const html = renderToStaticMarkup(<NotesImportControl importing={false} onImportFiles={() => {}} />);
 	assert.equal((html.match(/type="file"/g) ?? []).length, 2);

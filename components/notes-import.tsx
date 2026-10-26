@@ -95,6 +95,7 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 			};
 			for (const [index, file] of files.entries()) {
 				const path = notesPath(file);
+				if (file.webkitRelativePath && file.name === ".DS_Store") continue;
 				if (!IMPORT_EXTENSIONS.test(path) || !validNotesPath(path, file.name)) {
 					failures.set(index, `${path}: Unsupported format or unsafe relative path.`);
 					continue;

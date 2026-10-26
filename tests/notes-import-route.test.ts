@@ -120,12 +120,27 @@ it("folder paths distinguish identical basenames and HTML reaches extractor unch
 	]);
 });
 
+it("accepts Chromium folder multipart filenames while preserving safe relative source paths", async () => {
+	const calls: { filePath: string; text: string }[] = [];
+	extraction.importNotes = async (input) => { calls.push(input); return { nodes: 0, chains: 0 }; };
+	const form = new FormData();
+	const path = "STAT 211 notes/notes/09_chapter3normal.html";
+	// Chromium serializes folder-selected File.name as webkitRelativePath in multipart.
+	form.append("files", new File(["<p>fixture</p>"], "09_chapter3normal.html"), path);
+	form.append("paths", path);
+	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	assert.equal(response.status, 200);
+	const { results } = await response.json();
+	assert.equal(results[0].filePath, path);
+	assert.deepEqual(calls, [{ filePath: path, text: "<p>fixture</p>" }]);
+});
+
 it("rejects unsafe paths, mismatched path counts and unsupported formats before extraction", async () => {
 	let calls = 0;
 	extraction.importNotes = async () => { calls++; return { nodes: 0, chains: 0 }; };
 	for (const [path, name] of [
 		["../same.md", "same.md"], ["C:/same.md", "same.md"], ["x\\same.md", "same.md"],
-		["foo/other.md", "same.md"], ["folder/image.png", "image.png"],
+		["foo/other.md", "same.md"], ["foo/same.md", "bar/same.md"], ["folder/image.png", "image.png"],
 	] as const) {
 		const form = new FormData();
 		form.append("files", new File(["text"], name)); form.append("paths", path);
