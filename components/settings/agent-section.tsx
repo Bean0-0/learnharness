@@ -135,10 +135,6 @@ export function composeGraphTools(agent: AgentSettings | undefined, on: boolean)
 	return { ...agent, graphTools: { enabled: on } };
 }
 
-/** Compose: one slot's model/thinking override. Empty model = absent
- *  override (Default — falls to the factory pin); empty thinking = the
- *  tier keeps its resolved thinking budget. Per-field independence, same
- *  as the schema's ModelSlot. Pure — exported for tests. */
 /** Parallel subagents row → the whole agent section, or null for input
  *  that writes nothing. Empty = unset (factory 3); numbers round and clamp
  *  into 1–8 so the strict server parse always accepts the write. */
@@ -155,6 +151,10 @@ export function composeExtractionConcurrency(agent: AgentSettings | undefined, r
 	};
 }
 
+/** Compose: one slot's model/thinking override. Empty model = absent
+ *  override (Default — falls to the factory pin); empty thinking = the
+ *  tier keeps its resolved thinking budget. Per-field independence, same
+ *  as the schema's ModelSlot. Pure — exported for tests. */
 export function composeSlotModel(
 	models: ModelsSettings | undefined,
 	slot: ModelSlotName,

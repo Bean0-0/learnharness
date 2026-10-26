@@ -21,10 +21,6 @@
  * only remaining throttle.
  */
 
-/** The historical constant — now only the fallback when a caller passes no
- *  live count (the user setting agent.extractionConcurrency, 2026-10-26). */
-const DEFAULT_PERMIT_COUNT = 3;
-
 export interface LlmSlots {
 	active: number;
 	queue: { resolve: () => void; dead: boolean }[];
@@ -64,10 +60,10 @@ function admit(slots: LlmSlots, limit: number): void {
 export async function withBgLlmSlot<T>(
 	signal: AbortSignal | undefined,
 	critical: () => Promise<T>,
-	permits: () => number = () => DEFAULT_PERMIT_COUNT,
+	permits: () => number,
 ): Promise<T> {
 	const slots = bgLlmSlots();
-	const limit = () => Math.max(1, Math.floor(permits()) || DEFAULT_PERMIT_COUNT);
+	const limit = () => Math.max(1, permits());
 	// Earlier waiters first (FIFO), then a fresh take if room remains.
 	admit(slots, limit());
 	if (slots.active < limit() && slots.queue.length === 0) {

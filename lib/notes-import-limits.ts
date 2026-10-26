@@ -1,7 +1,10 @@
-// Shared upload contract. Leave room for multipart headers/relative paths inside
-// the server's hard 8 MiB request limit.
-export const MAX_IMPORT_REQUEST_BYTES = 8 * 1024 * 1024;
-export const MAX_IMPORT_BATCH_BYTES = 7 * 1024 * 1024;
+// Shared upload contract. The per-file cap leaves room for multipart headers
+// and relative paths inside the server's hard per-request cap.
+const MiB = 1024 * 1024;
+export const MAX_IMPORT_REQUEST_BYTES = 8 * MiB;
+export const MAX_IMPORT_FILE_BYTES = 7 * MiB;
+export const MAX_IMPORT_FILES = 64;
+export const formatMiB = (bytes: number) => `${bytes / MiB} MiB`;
 export const IMPORT_EXTENSIONS = /\.(?:md|markdown|txt)$/i;
 
 /** Folder-relative paths are graph source identity, never filesystem paths. */

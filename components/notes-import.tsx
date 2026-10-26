@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { UploadIcon } from "lucide-react";
 import { Hint } from "@/components/ui/hint";
-import { IMPORT_EXTENSIONS, MAX_IMPORT_BATCH_BYTES, validNotesPath } from "@/lib/notes-import-limits";
+import { formatMiB, IMPORT_EXTENSIONS, MAX_IMPORT_FILE_BYTES, validNotesPath } from "@/lib/notes-import-limits";
 import { EXTRACTION_CONCURRENCY_DEFAULT, resolveSettings, type UserSettings } from "@/src/core";
 
 export function notesPath(file: File): string {
@@ -76,6 +76,11 @@ export async function loadImportConcurrency(): Promise<number> {
 	}
 }
 
+function failureMessage(r: NotesImportResult): string {
+	const details = [r.provider, r.missing?.join(", "), r.slots?.join(", ")].filter(Boolean);
+	return `${r.filePath}: ${r.error}${r.code ? `\n${[r.code, ...details].join(" — ")}` : ""}`;
+}
+
 /** Only error text survives a request; selected Files stay request-local. */
 export function useNotesImport(callbacks: {
 	onStart?: () => void;
@@ -102,8 +107,8 @@ export function useNotesImport(callbacks: {
 					failures.set(index, `${path}: Unsupported format or unsafe relative path.`);
 					continue;
 				}
-				if (file.size > MAX_IMPORT_BATCH_BYTES) {
-					failures.set(index, `${path}: File exceeds 7 MiB import limit.`);
+				if (file.size > MAX_IMPORT_FILE_BYTES) {
+					failures.set(index, `${path}: File exceeds ${formatMiB(MAX_IMPORT_FILE_BYTES)} import limit.`);
 					continue;
 				}
 				queue.push({ file, index });
@@ -112,15 +117,14 @@ export function useNotesImport(callbacks: {
 			// flight — the next file starts the moment any file finishes, so a
 			// slow file never idles the other workers. A lost response is
 			// ambiguous for only its own file and is never retried.
-			const width = Math.max(1, Math.floor(await (callbacks.loadConcurrency ?? loadImportConcurrency)()) || EXTRACTION_CONCURRENCY_DEFAULT);
+			const width = Math.max(1, await (callbacks.loadConcurrency ?? loadImportConcurrency)());
 			const worker = async () => {
 				for (let next = queue.shift(); next; next = queue.shift()) {
 					const { file, index } = next;
 					try {
+						// The parser guarantees exactly one row for one file.
 						const [result] = await postNotesImport([file]);
-						if (result && !result.ok) {
-							failures.set(index, `${result.filePath}: ${result.error}${result.code ? `\n${result.code}${result.provider ? ` — ${result.provider}` : ""}${result.missing?.length ? ` — ${result.missing.join(", ")}` : ""}${result.slots?.length ? ` — ${result.slots.join(", ")}` : ""}` : ""}`);
-						}
+						if (!result!.ok) failures.set(index, failureMessage(result!));
 					} catch (error) {
 						// Never auto-retry: an invalid/lost response may follow a committed merge.
 						failures.set(index, `${notesPath(file)}: ${error instanceof Error ? error.message : String(error)}`);
@@ -141,7 +145,8 @@ export function useNotesImport(callbacks: {
 	};
 }
 
-/** Shared picker for graph and minimal home: one entry point, two native selectors. */
+/** Shared picker for graph and minimal home: one button, a Files / Folder
+ *  menu, two native pickers. */
 export function NotesImportControl({ importing, onImportFiles }: {
 	importing: boolean;
 	onImportFiles: (files: FileList | null) => void;
@@ -149,28 +154,50 @@ export function NotesImportControl({ importing, onImportFiles }: {
 	const filesRef = useRef<HTMLInputElement>(null);
 	const folderRef = useRef<HTMLInputElement>(null);
 	const [open, setOpen] = useState(false);
+	const onChange = (event: ChangeEvent<HTMLInputElement>) => {
+		onImportFiles(event.target.files);
+		event.target.value = ""; // allow re-picking the same selection
+	};
+	const choices = [["Files", filesRef], ["Folder", folderRef]] as const;
 	return (
-		<div className="relative shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur"
+		<div
+			className="relative shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur"
 			onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
-			onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
-			<input ref={filesRef} type="file" multiple accept=".md,.markdown,.txt" className="hidden"
-				onChange={(event) => { onImportFiles(event.target.files); event.target.value = ""; }} />
-			<input ref={folderRef} type="file" multiple accept=".md,.markdown,.txt"
-				{...{ webkitdirectory: "", directory: "" }} className="hidden"
-				onChange={(event) => { onImportFiles(event.target.files); event.target.value = ""; }} />
+			onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}
+		>
+			<input ref={filesRef} type="file" multiple accept=".md,.markdown,.txt" className="hidden" onChange={onChange} />
+			{/* webkitdirectory is not in React's input typings; accept does not
+			    filter folder contents, so the hook skips unsupported files. */}
+			<input ref={folderRef} type="file" {...{ webkitdirectory: "" }} className="hidden" onChange={onChange} />
 			<Hint label="Import notes into the graph" side="bottom">
-				<button type="button" disabled={importing} onClick={() => setOpen(!open)}
-					aria-expanded={open} aria-haspopup="menu" data-testid="import-notes"
-					className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50">
+				<button
+					type="button"
+					disabled={importing}
+					onClick={() => setOpen(!open)}
+					aria-expanded={open}
+					aria-haspopup="menu"
+					data-testid="import-notes"
+					className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50"
+				>
 					<UploadIcon className="size-3" />
 					{importing ? "Importing…" : "Import notes…"}
 				</button>
 			</Hint>
-			{open && !importing && <div role="menu" aria-label="Import notes" className="absolute right-0 top-full z-50 mt-1 min-w-32 rounded-lg border bg-card p-1 shadow-lg">
-				{([ ["Files", filesRef], ["Folder", folderRef] ] as const).map(([label, input]) =>
-					<button key={label} type="button" role="menuitem" className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-accent"
-						onClick={() => { setOpen(false); input.current?.click(); }}>{label}</button>)}
-			</div>}
+			{open && !importing && (
+				<div role="menu" aria-label="Import notes" className="absolute right-0 top-full z-50 mt-1 min-w-32 rounded-lg border bg-card p-1 shadow-lg">
+					{choices.map(([label, input]) => (
+						<button
+							key={label}
+							type="button"
+							role="menuitem"
+							className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-accent"
+							onClick={() => { setOpen(false); input.current?.click(); }}
+						>
+							{label}
+						</button>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }

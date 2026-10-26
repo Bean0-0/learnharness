@@ -10,12 +10,20 @@
  *
  * Small concurrency cap: the model calls are the slow part, and a burst of
  * 25 simultaneous runs would trip provider rate limits — a 3-wide worker
- * pool per request keeps the run registry (the dock's status chips) and the ledgers
- * healthy. The dock's chips + graph refetch track progress live through
+ * pool keeps the run registry (the dock's status chips) and the ledgers
+ * healthy. The client sends one file per request; model calls across all
+ * requests are bounded by the shared background-LLM pool. The dock's chips + graph refetch track progress live through
  * /api/graph/status, as with session runs.
  */
 import { extraction, NotesImportError } from "@/src/server";
-import { IMPORT_EXTENSIONS, MAX_IMPORT_BATCH_BYTES, MAX_IMPORT_REQUEST_BYTES, validNotesPath } from "@/lib/notes-import-limits";
+import {
+	formatMiB,
+	IMPORT_EXTENSIONS,
+	MAX_IMPORT_FILE_BYTES,
+	MAX_IMPORT_FILES,
+	MAX_IMPORT_REQUEST_BYTES,
+	validNotesPath,
+} from "@/lib/notes-import-limits";
 import {
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
@@ -45,11 +53,11 @@ interface ImportResult {
 export async function POST(request: Request) {
 	// Cap actual bytes even without a trustworthy Content-Length. formData()
 	// alone buffers the entire multipart request before any worker starts.
-	const tooLarge = () => Response.json({ error: "Import request exceeds 8 MiB limit" }, { status: 413 });
+	const tooLarge = () => Response.json({ error: `Import request exceeds ${formatMiB(MAX_IMPORT_REQUEST_BYTES)} limit` }, { status: 413 });
 	if (Number(request.headers.get("content-length")) > MAX_IMPORT_REQUEST_BYTES) return tooLarge();
 	const reader = request.body?.getReader();
 	if (!reader) return Response.json({ results: [] as ImportResult[], error: "no files" }, { status: 400 });
-	const chunks: Uint8Array[] = [];
+	const chunks: Uint8Array<ArrayBuffer>[] = [];
 	let total = 0;
 	for (;;) {
 		const { done, value } = await reader.read();
@@ -58,14 +66,12 @@ export async function POST(request: Request) {
 		if (total > MAX_IMPORT_REQUEST_BYTES) { await reader.cancel(); return tooLarge(); }
 		chunks.push(value);
 	}
-	const payload = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) { payload.set(chunk, offset); offset += chunk.byteLength; }
 	let form: FormData;
 	try {
 		form = await new Request(request.url, {
-			method: "POST", headers: { "content-type": request.headers.get("content-type") ?? "" },
-			body: new Blob([payload.buffer]),
+			method: "POST",
+			headers: { "content-type": request.headers.get("content-type") ?? "" },
+			body: new Blob(chunks),
 		}).formData();
 	} catch {
 		return Response.json({ error: "Invalid multipart import request" }, { status: 400 });
@@ -74,17 +80,21 @@ export async function POST(request: Request) {
 	if (files.length === 0) {
 		return Response.json({ results: [] as ImportResult[], error: "no files" }, { status: 400 });
 	}
-	if (files.length > 64) return Response.json({ error: "Import request exceeds 64 files" }, { status: 400 });
+	if (files.length > MAX_IMPORT_FILES) {
+		return Response.json({ error: `Import request exceeds ${MAX_IMPORT_FILES} files` }, { status: 400 });
+	}
+	// Optional "paths" carry folder-relative identity, one per file.
 	const suppliedPaths = form.getAll("paths");
-	if (suppliedPaths.length && suppliedPaths.length !== files.length) return Response.json({ error: "Invalid import paths" }, { status: 400 });
-	const paths = files.map((file, index) => suppliedPaths.length ? suppliedPaths[index] : file.name);
-	if (files.some((file, index) => file.size > MAX_IMPORT_BATCH_BYTES || typeof paths[index] !== "string"
-		|| !validNotesPath(paths[index] as string, file.name) || !IMPORT_EXTENSIONS.test(paths[index] as string))) {
+	if (suppliedPaths.length > 0 && (suppliedPaths.length !== files.length || suppliedPaths.some((p) => typeof p !== "string"))) {
+		return Response.json({ error: "Invalid import paths" }, { status: 400 });
+	}
+	const paths = suppliedPaths.length > 0 ? (suppliedPaths as string[]) : files.map((file) => file.name);
+	if (files.some((file, i) => file.size > MAX_IMPORT_FILE_BYTES || !validNotesPath(paths[i]!, file.name) || !IMPORT_EXTENSIONS.test(paths[i]!))) {
 		return Response.json({ error: "Import contains an oversized file, unsupported format or unsafe path" }, { status: 400 });
 	}
 
 	const results: ImportResult[] = [];
-	const queue = files.map((file, requestIndex) => ({ file, filePath: paths[requestIndex] as string, requestIndex }));
+	const queue = files.map((file, requestIndex) => ({ file, filePath: paths[requestIndex]!, requestIndex }));
 	const workers = Array.from({ length: Math.min(3, files.length) }, async () => {
 		for (;;) {
 			const next = queue.shift();

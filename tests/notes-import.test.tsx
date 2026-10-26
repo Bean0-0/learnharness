@@ -201,13 +201,14 @@ it("directory picks preserve relative paths and reject attribution to the wrong 
 	] }, nested), /Invalid import response/);
 });
 
-/** One-file request → its own completed row (the per-file transport). */
+/** The single file (and its path) a per-file request carried. */
 const echo = (init?: RequestInit) => {
 	const sent = (init?.body as FormData).getAll("files") as File[];
 	assert.equal(sent.length, 1, "exactly one file per request");
 	const paths = (init?.body as FormData).getAll("paths") as string[];
 	return { file: sent[0]!, path: paths[0] ?? sent[0]!.name };
 };
+/** That file's completed row. */
 const done = (filePath: string): Response => Response.json({ results: [{ requestIndex: 0, filePath, ok: true, outcome: "completed", stats: { nodes: 0 } }] });
 
 it("a slow file never blocks later files: N single-file requests stay in flight", async () => {

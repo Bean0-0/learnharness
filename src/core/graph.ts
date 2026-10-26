@@ -566,13 +566,16 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	const communities = birthSessionPartition(graph.nodes);
 	const clusters: Cluster[] = communities
 		.filter((community) => community.members.length >= MIN_CLUSTER_SIZE)
-		.map((community) => ({
-			id: community.id,
-			// Notes files show a tidied filename (owner, 2026-10-26) — the
-			// path stays in fileSources (provenance) untouched.
-			label: sessions[community.id] ?? (fileSources[community.id] !== undefined ? tidySourceLabel(fileSources[community.id]!) : null),
-			members: community.members,
-		}));
+		.map((community) => {
+			// Notes files show a tidied filename (owner, 2026-10-26); the
+			// raw path stays in fileSources for provenance.
+			const file = fileSources[community.id];
+			return {
+				id: community.id,
+				label: sessions[community.id] ?? (file === undefined ? null : tidySourceLabel(file)),
+				members: community.members,
+			};
+		});
 	// IMP-NODE CLUSTER ASSIGNMENT (owner, 2026-09-30): majority among the
 	// premises' birth sessions, ties to the chain's own birth — attached
 	// AFTER the hull filter so a two-proposition community + its bundle
