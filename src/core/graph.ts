@@ -67,6 +67,7 @@ import type {
 import { MIN_CLUSTER_SIZE } from "./clusters.ts";
 import { formatChainLine } from "./chains.ts";
 import { attachImpToCommunities, birthSessionOf, birthSessionPartition } from "./session-clusters.ts";
+import { tidySourceLabel } from "./source-label.ts";
 import type { ChatStore, GraphStore } from "./ports.ts";
 
 /** The storage ports every graph operation needs, passed explicitly. */
@@ -567,7 +568,9 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 		.filter((community) => community.members.length >= MIN_CLUSTER_SIZE)
 		.map((community) => ({
 			id: community.id,
-			label: sessions[community.id] ?? fileSources[community.id] ?? null,
+			// Notes files show a tidied filename (owner, 2026-10-26) — the
+			// path stays in fileSources (provenance) untouched.
+			label: sessions[community.id] ?? (fileSources[community.id] !== undefined ? tidySourceLabel(fileSources[community.id]!) : null),
 			members: community.members,
 		}));
 	// IMP-NODE CLUSTER ASSIGNMENT (owner, 2026-09-30): majority among the
