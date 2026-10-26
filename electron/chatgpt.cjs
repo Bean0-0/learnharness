@@ -431,19 +431,19 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 			if (!active()) return modelValue();
 			// Discovery is identity/scope authorization, not an invented model lease.
 			const token = await credential(false);
+			const discover = () => json(`${RESOURCE}/models`, { headers: { Authorization: `Bearer ${token.accessToken}` }, signal: AbortSignal.any([transportAbort.signal, AbortSignal.timeout(15000)]) });
 			let body;
-			for (let attempt = 0; attempt < 2; attempt++) {
-				// A transient discovery outage should not remove a selected model on
-				// every turn. Never retry entitlement, rate-limit, or authority failures.
+			try {
+				body = await discover();
+			} catch (err) {
+				// Retry a transient outage once so it does not empty the catalog and
+				// strand the selected model. Never retry entitlement, rate-limit, or
+				// authority failures.
+				if (!err.retryable) throw err;
+				await new Promise((resolve) => setTimeout(resolve, 150));
 				authorized(false, undefined, token.epoch);
 				if (sequence !== catalogSequence || active()?.id !== token.accountId) throw fail("catalog");
-				try {
-					body = await json(`${RESOURCE}/models`, { headers: { Authorization: `Bearer ${token.accessToken}` }, signal: AbortSignal.any([transportAbort.signal, AbortSignal.timeout(15000)]) });
-					break;
-				} catch (err) {
-					if (attempt || !err.retryable) throw err;
-					await new Promise((resolve) => setTimeout(resolve, 150));
-				}
+				body = await discover();
 			}
 			authorized(false, undefined, token.epoch);
 			if (sequence !== catalogSequence || active()?.id !== token.accountId || !Array.isArray(body.models)) throw fail("catalog");
